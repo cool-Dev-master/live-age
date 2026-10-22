@@ -657,20 +657,45 @@ async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = f
   }
 }
 
+function lockAndClearData(showConfirm = false) {
+  if (showConfirm) {
+    if (!persons.length) return;
+    if (!confirm('Lock and clear all local records from this browser? This cannot be undone unless you re-import.')) return;
+  }
+  persons = [];
+  savePersons(persons);
+  closeDetailModal();
+  render();
+  setEncStatus('Local records cleared');
+  setIoStatus('Local records cleared');
+  showToast('All local records cleared.');
+}
+
 function handleSetupUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const hash = window.location.hash || '';
+
+  // Check for reset parameter (?reset or #reset)
+  if (params.has('reset') || /^#reset$/i.test(hash.trim())) {
+    params.delete('reset');
+    const newSearch = params.toString() ? `?${params.toString()}` : '';
+    const newHash = /^#reset$/i.test(hash.trim()) ? '' : hash;
+    history.replaceState(null, '', window.location.pathname + newSearch + newHash);
+    lockAndClearData(false);
+    return;
+  }
+
   let pass = '';
 
-  // 1. Check Hash (#key=... or #setup=...)
-  const hash = window.location.hash || '';
-  const hashMatch = hash.match(/^#(?:setup|key)=(.*)$/i);
+  // 1. Check Hash (#setup=...)
+  const hashMatch = hash.match(/^#setup=(.*)$/i);
   if (hashMatch && hashMatch[1]) {
     pass = decodeURIComponent(hashMatch[1]).trim();
   }
 
-  // 2. Check Query Parameters (?key=... or ?setup=...)
+  // 2. Check Query Parameters (?setup=...)
   if (!pass) {
-    const params = new URLSearchParams(window.location.search);
-    const qPass = params.get('key') || params.get('setup');
+    const qPass = params.get('setup');
     if (qPass) {
       pass = qPass.trim();
     }
@@ -723,13 +748,7 @@ btnUnlockEnc.addEventListener('click', () => {
 });
 
 btnLockData.addEventListener('click', () => {
-  if (!persons.length) return;
-  if (!confirm('Lock and clear all local records from this browser? This cannot be undone unless you re-import.')) return;
-  persons = [];
-  savePersons(persons);
-  render();
-  setEncStatus('Local records cleared');
-  setIoStatus('Local records cleared');
+  lockAndClearData(true);
 });
 
 btnCloseEncModal.addEventListener('click', closeEncModal);
