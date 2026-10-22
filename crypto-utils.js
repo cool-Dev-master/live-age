@@ -74,11 +74,14 @@
     );
   }
 
+  const VERSION_BYTE = 1;
+
   /**
    * Encrypt plaintext string with passphrase
-   * Returns a versioned JSON string containing algorithm, salt, iv, tagLength, and ciphertext
+   * Returns a single compact Base64 string: [version (1B) + salt (16B) + iv (12B) + ciphertext]
+   * If asJson=true, returns versioned JSON string
    */
-  async function encryptData(plaintextStr, passphrase, iterations = PBKDF2_ITERATIONS) {
+  async function encryptData(plaintextStr, passphrase, iterations = PBKDF2_ITERATIONS, asJson = false) {
     if (!passphrase || typeof passphrase !== 'string') {
       throw new Error('A valid passphrase is required for encryption.');
     }
@@ -105,68 +108,100 @@
 
     const ciphertextBytes = new Uint8Array(ciphertextBuffer);
 
-    const payload = {
-      version: 1,
-      kdf: {
-        algorithm: 'PBKDF2',
-        hash: 'SHA-256',
-        iterations: iterations,
-        salt: bytesToBase64(salt)
-      },
-      cipher: {
-        algorithm: 'AES-GCM',
-        iv: bytesToBase64(iv),
-        tagLength: TAG_LENGTH_BITS
-      },
-      ciphertext: bytesToBase64(ciphertextBytes)
-    };
+    if (asJson) {
+      const payload = {
+        version: VERSION_BYTE,
+        kdf: {
+          algorithm: 'PBKDF2',
+          hash: 'SHA-256',
+          iterations: iterations,
+          salt: bytesToBase64(salt)
+        },
+        cipher: {
+          algorithm: 'AES-GCM',
+          iv: bytesToBase64(iv),
+          tagLength: TAG_LENGTH_BITS
+        },
+        ciphertext: bytesToBase64(ciphertextBytes)
+      };
+      return JSON.stringify(payload, null, 2);
+    }
 
-    return JSON.stringify(payload, null, 2);
+    // Default: Single compact binary string packed as [version (1B) + iterations (4B) + salt (16B) + iv (12B) + ciphertext]
+    const headerLen = 1 + 4 + salt.length + iv.length;
+    const packed = new Uint8Array(headerLen + ciphertextBytes.length);
+    packed[0] = VERSION_BYTE;
+    const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+    view.setUint32(1, iterations, false); // 4 bytes Big Endian
+    packed.set(salt, 5);
+    packed.set(iv, 5 + salt.length);
+    packed.set(ciphertextBytes, headerLen);
+
+    return bytesToBase64(packed);
   }
 
   /**
-   * Decrypt versioned encrypted payload with passphrase
+   * Decrypt encrypted payload with passphrase
+   * Supports both single compact Base64 string and legacy JSON format
    * Throws an error if authentication fails (wrong password or tampered ciphertext)
    */
-  async function decryptData(encryptedJsonStr, passphrase) {
+  async function decryptData(encryptedInput, passphrase) {
     if (!passphrase || typeof passphrase !== 'string') {
       throw new Error('A valid passphrase is required for decryption.');
     }
-
-    let payload;
-    try {
-      payload = typeof encryptedJsonStr === 'string' ? JSON.parse(encryptedJsonStr) : encryptedJsonStr;
-    } catch {
-      throw new Error('Malformed encrypted file format: invalid JSON.');
+    if (!encryptedInput || (typeof encryptedInput !== 'string' && !(encryptedInput instanceof Uint8Array))) {
+      throw new Error('Encrypted payload is missing or invalid.');
     }
 
-    if (!payload || payload.version !== 1) {
-      throw new Error('Unsupported or missing encrypted file version.');
-    }
+    let salt, iv, ciphertextBytes, iterations = PBKDF2_ITERATIONS;
 
-    if (
-      !payload.kdf ||
-      payload.kdf.algorithm !== 'PBKDF2' ||
-      payload.kdf.hash !== 'SHA-256' ||
-      !payload.kdf.salt ||
-      !payload.kdf.iterations
-    ) {
-      throw new Error('Invalid or unsupported key derivation parameters.');
-    }
+    // Check if input is JSON format (starts with '{' after trimming)
+    const trimmed = typeof encryptedInput === 'string' ? encryptedInput.trim() : '';
+    if (trimmed.startsWith('{')) {
+      let payload;
+      try {
+        payload = JSON.parse(trimmed);
+      } catch {
+        throw new Error('Malformed encrypted file format: invalid JSON.');
+      }
 
-    if (
-      !payload.cipher ||
-      payload.cipher.algorithm !== 'AES-GCM' ||
-      !payload.cipher.iv ||
-      !payload.ciphertext
-    ) {
-      throw new Error('Invalid or unsupported cipher parameters.');
-    }
+      if (!payload || payload.version !== 1) {
+        throw new Error('Unsupported or missing encrypted file version.');
+      }
+      if (!payload.kdf || !payload.kdf.salt || !payload.cipher || !payload.cipher.iv || !payload.ciphertext) {
+        throw new Error('Invalid or unsupported encrypted parameters.');
+      }
 
-    const salt = base64ToBytes(payload.kdf.salt);
-    const iv = base64ToBytes(payload.cipher.iv);
-    const ciphertextBytes = base64ToBytes(payload.ciphertext);
-    const iterations = payload.kdf.iterations;
+      salt = base64ToBytes(payload.kdf.salt);
+      iv = base64ToBytes(payload.cipher.iv);
+      ciphertextBytes = base64ToBytes(payload.ciphertext);
+      iterations = payload.kdf.iterations || PBKDF2_ITERATIONS;
+    } else {
+      // Compact single Base64 string format
+      let rawBytes;
+      try {
+        rawBytes = typeof encryptedInput === 'string' ? base64ToBytes(trimmed) : encryptedInput;
+      } catch {
+        throw new Error('Malformed encrypted data: invalid base64 encoding.');
+      }
+
+      const headerLen = 1 + 4 + SALT_BYTE_LENGTH + NONCE_BYTE_LENGTH; // 1 + 4 + 16 + 12 = 33
+      const minLength = headerLen + 16; // at least 33 + 16 (tag) = 49 bytes
+      if (!rawBytes || rawBytes.length < minLength) {
+        throw new Error('Malformed encrypted data: payload too short.');
+      }
+
+      const version = rawBytes[0];
+      if (version !== 1) {
+        throw new Error(`Unsupported encrypted payload version: ${version}.`);
+      }
+
+      const view = new DataView(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength);
+      iterations = view.getUint32(1, false);
+      salt = rawBytes.slice(5, 5 + SALT_BYTE_LENGTH);
+      iv = rawBytes.slice(5 + SALT_BYTE_LENGTH, headerLen);
+      ciphertextBytes = rawBytes.slice(headerLen);
+    }
 
     if (iterations < 100000) {
       throw new Error('Insecure iteration count rejected.');
@@ -180,7 +215,7 @@
         {
           name: 'AES-GCM',
           iv: iv,
-          tagLength: payload.cipher.tagLength || TAG_LENGTH_BITS
+          tagLength: TAG_LENGTH_BITS
         },
         key,
         ciphertextBytes
