@@ -106,6 +106,32 @@ function calculateAge(dobString, birthTimeStr, now = new Date()) {
   };
 }
 
+function calculateCumulativeUnits(dobString, birthTimeStr, now = new Date()) {
+  const birth = parseBirth(dobString, birthTimeStr);
+  const diffMs = Math.max(0, now - birth);
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const totalDays = Math.floor(totalHours / 24);
+  const totalWeeks = Math.floor(totalDays / 7);
+
+  let totalMonths = (now.getFullYear() - birth.getFullYear()) * 12 + (now.getMonth() - birth.getMonth());
+  if (addMonths(birth, totalMonths) > now) totalMonths--;
+  totalMonths = Math.max(0, totalMonths);
+
+  const totalYears = Math.floor(totalMonths / 12);
+
+  return {
+    totalYears,
+    totalMonths,
+    totalWeeks,
+    totalDays,
+    totalHours,
+    totalMinutes,
+    totalSeconds
+  };
+}
+
 /* Next birthday feature (disabled)
 // Whole days until the next birthday (0 = today)
 function daysToNextBirthday(dobString, now = new Date()) {
@@ -160,12 +186,50 @@ const btnImport        = document.getElementById('btnImport');
 const importFile       = document.getElementById('importFile');
 const ioStatus         = document.getElementById('ioStatus');
 
+// Detail Modal DOM References
+const detailModalOverlay  = document.getElementById('detailModalOverlay');
+const btnCloseDetailModal = document.getElementById('btnCloseDetailModal');
+const detailAvatar        = document.getElementById('detailAvatar');
+const detailPersonName    = document.getElementById('detailPersonName');
+const detailDobText       = document.getElementById('detailDobText');
+const detYears            = document.getElementById('detYears');
+const detMonths           = document.getElementById('detMonths');
+const detWeeks            = document.getElementById('detWeeks');
+const detDays             = document.getElementById('detDays');
+const detHours            = document.getElementById('detHours');
+const detMinutes          = document.getElementById('detMinutes');
+const detSeconds          = document.getElementById('detSeconds');
+const totYears            = document.getElementById('totYears');
+const totMonths           = document.getElementById('totMonths');
+const totWeeks            = document.getElementById('totWeeks');
+const totDays             = document.getElementById('totDays');
+const totHours            = document.getElementById('totHours');
+const totMinutes          = document.getElementById('totMinutes');
+const totSeconds          = document.getElementById('totSeconds');
+
+// Encrypted Data Modal & Settings DOM References
+const encStatus           = document.getElementById('encStatus');
+const btnUnlockEnc        = document.getElementById('btnUnlockEnc');
+const btnLockData         = document.getElementById('btnLockData');
+const encModalOverlay     = document.getElementById('encModalOverlay');
+const btnCloseEncModal    = document.getElementById('btnCloseEncModal');
+const encForm             = document.getElementById('encForm');
+const inputPassphrase     = document.getElementById('inputPassphrase');
+const btnTogglePw         = document.getElementById('btnTogglePw');
+const eyeIcon             = document.getElementById('eyeIcon');
+const encConflictWrap     = document.getElementById('encConflictWrap');
+const encFormError        = document.getElementById('encFormError');
+const encFormSuccess      = document.getElementById('encFormSuccess');
+const btnEncSubmit        = document.getElementById('btnEncSubmit');
+const btnEncSubmitText    = document.getElementById('btnEncSubmitText');
+
 // ---- State ----
 let persons  = loadPersons();
 let settings = loadSettings();
 let tickerInterval = null; // holds a setTimeout id
 let editingId = null;
 let lastFocused = null;
+let activeDetailPerson = null;
 const cardRefs = new Map(); // person.id -> cached DOM nodes
 
 // ---- Apply Saved Settings ----
@@ -182,6 +246,7 @@ function render() {
   const has = persons.length > 0;
   emptyState.classList.toggle('hidden', has);
   cardsGrid.classList.toggle('hidden', !has);
+  updateEncStatus();
   if (!has) { cardsGrid.innerHTML = ''; cardRefs.clear(); return; }
 
   const existingIds = new Set([...cardsGrid.querySelectorAll('.age-card')].map(el=>el.dataset.id));
@@ -256,8 +321,16 @@ function createCard(person) {
     </div>
   `;
 
-  card.querySelector('.btn-edit').addEventListener('click',   () => openModal(person));
-  card.querySelector('.btn-delete').addEventListener('click', () => deletePerson(person.id));
+  card.querySelector('.btn-edit').addEventListener('click',   (e) => { e.stopPropagation(); openModal(person); });
+  card.querySelector('.btn-delete').addEventListener('click', (e) => { e.stopPropagation(); deletePerson(person.id); });
+
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('.card-actions')) return;
+    if (!settings.editEnabled) {
+      openDetailModal(person);
+    }
+  });
+
   return card;
 }
 
@@ -299,6 +372,10 @@ function tick() {
     // const left = daysToNextBirthday(person.dob, now);
     // setText(refs.next, left === 0 ? '\u{1F382} Birthday today!' : `Next birthday in ${left} day${left === 1 ? '' : 's'}`);
   });
+
+  if (activeDetailPerson) {
+    updateDetailModal(activeDetailPerson, now);
+  }
 }
 
 // Align ticks to the real second boundary so the clock never drifts or skips
@@ -373,19 +450,260 @@ function closeModal() {
   if (lastFocused && lastFocused.focus) lastFocused.focus(); // return focus to what opened it
 }
 
+// ---- Person Detail Modal ----
+function updateDetailModal(person, now = new Date()) {
+  const age = calculateAge(person.dob, person.birthTime || null, now);
+  const cum = calculateCumulativeUnits(person.dob, person.birthTime || null, now);
+
+  setText(detYears,   age.years);
+  setText(detMonths,  pad2(age.months));
+  setText(detWeeks,   pad2(age.weeks));
+  setText(detDays,    pad2(age.days));
+  setText(detHours,   pad2(age.hours));
+  setText(detMinutes, pad2(age.minutes));
+  setText(detSeconds, pad2(age.seconds));
+
+  setText(totYears,   `${cum.totalYears.toLocaleString()} years`);
+  setText(totMonths,  `${cum.totalMonths.toLocaleString()} months`);
+  setText(totWeeks,   `${cum.totalWeeks.toLocaleString()} weeks`);
+  setText(totDays,    `${cum.totalDays.toLocaleString()} days`);
+  setText(totHours,   `${cum.totalHours.toLocaleString()} hours`);
+  setText(totMinutes, `${cum.totalMinutes.toLocaleString()} minutes`);
+  setText(totSeconds, `${cum.totalSeconds.toLocaleString()} seconds`);
+}
+
+function openDetailModal(person) {
+  activeDetailPerson = person;
+  detailAvatar.textContent = (person.name[0] || '?').toUpperCase();
+  detailPersonName.textContent = person.name;
+  detailDobText.textContent = `Born ${formatDob(person.dob, person.birthTime)}`;
+  updateDetailModal(person, new Date());
+  lastFocused = document.activeElement;
+  detailModalOverlay.classList.add('open');
+}
+
+function closeDetailModal() {
+  detailModalOverlay.classList.remove('open');
+  activeDetailPerson = null;
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
+}
+
+// ---- Encrypted Data Management (script.enc) ----
+function setEncStatus(msg) { if (encStatus) encStatus.textContent = msg; }
+
+function updateEncStatus() {
+  if (btnLockData) {
+    btnLockData.style.display = persons.length > 0 ? 'inline-block' : 'none';
+  }
+}
+
+function openEncModal() {
+  encForm.reset();
+  encFormError.textContent = '';
+  encFormSuccess.textContent = '';
+  inputPassphrase.type = 'password';
+  if (eyeIcon) {
+    eyeIcon.innerHTML = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  encConflictWrap.classList.toggle('hidden', persons.length === 0);
+  lastFocused = document.activeElement;
+  encModalOverlay.classList.add('open');
+  setTimeout(() => inputPassphrase.focus(), 120);
+}
+
+function closeEncModal() {
+  encModalOverlay.classList.remove('open');
+  encForm.reset();
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
+}
+
+function validatePersonRecord(p) {
+  if (!p || typeof p !== 'object') return null;
+  const name = typeof p.name === 'string' ? stripCommas(p.name).trim().slice(0, 40) : '';
+  const dob = typeof p.dob === 'string' ? p.dob.trim() : '';
+  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) return null;
+
+  const [y, mo, d] = dob.split('-').map(Number);
+  const check = new Date(y, mo - 1, d);
+  if (check.getFullYear() !== y || check.getMonth() !== mo - 1 || check.getDate() !== d) return null;
+
+  let birthTime = null;
+  if (p.birthTime && typeof p.birthTime === 'string') {
+    const tm = p.birthTime.trim();
+    if (/^\d{2}:\d{2}$/.test(tm)) {
+      const [h, m] = tm.split(':').map(Number);
+      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        birthTime = `${pad2(h)}:${pad2(m)}`;
+      }
+    }
+  }
+
+  if (parseBirth(dob, birthTime) > new Date()) return null; // No future births
+  return { id: p.id || generateId(), name, dob, birthTime };
+}
+
+let toastTimeout = null;
+function showToast(message, isError = false) {
+  const toast = document.getElementById('toastNotification');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.style.borderColor = isError ? 'var(--danger)' : 'var(--accent-2)';
+  toast.classList.remove('hidden');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => {
+    toast.classList.add('hidden');
+  }, 3500);
+}
+
+async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = false) {
+  encFormError.textContent = '';
+  encFormSuccess.textContent = '';
+  btnEncSubmit.disabled = true;
+  btnEncSubmitText.textContent = 'Decrypting...';
+
+  try {
+    const encUrl = new URL('script.enc', window.location.href.split('#')[0].split('?')[0]).href;
+    let response;
+    try {
+      response = await fetch(encUrl, { cache: 'no-store' });
+    } catch {
+      throw new Error('Network error: Could not fetch script.enc');
+    }
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('File "script.enc" not found. Please ensure script.enc is placed in root.');
+      }
+      throw new Error(`Failed to load script.enc (HTTP ${response.status})`);
+    }
+
+    const encryptedData = await response.text();
+    if (!window.CryptoUtils) {
+      throw new Error('Crypto engine is not loaded.');
+    }
+
+    const decryptedStr = await window.CryptoUtils.decryptData(encryptedData, passphrase);
+
+    let rawList = [];
+    try {
+      rawList = JSON.parse(decryptedStr);
+    } catch {
+      const lines = decryptedStr.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      rawList = lines.map(parseImportLine).filter(Boolean);
+    }
+
+    if (!Array.isArray(rawList) || rawList.length === 0) {
+      throw new Error('No valid person records found in decrypted dataset.');
+    }
+
+    const key = p => `${p.name.toLowerCase()}|${p.dob}|${p.birthTime || ''}`;
+    let added = 0;
+    let skipped = 0;
+
+    if (mode === 'replace') {
+      const valid = [];
+      const seen = new Set();
+      for (const item of rawList) {
+        const p = validatePersonRecord(item);
+        if (p && !seen.has(key(p))) {
+          seen.add(key(p));
+          valid.push(p);
+          added++;
+        } else {
+          skipped++;
+        }
+      }
+      persons = valid;
+    } else {
+      const seen = new Set(persons.map(key));
+      for (const item of rawList) {
+        const p = validatePersonRecord(item);
+        if (p && !seen.has(key(p))) {
+          seen.add(key(p));
+          persons.push(p);
+          added++;
+        } else {
+          skipped++;
+        }
+      }
+    }
+
+    savePersons(persons);
+    render();
+    startTicker();
+
+    const successMsg = added > 0
+      ? `Imported ${added} record${added === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}.`
+      : `Records already up to date (${skipped} existing).`;
+
+    encFormSuccess.textContent = successMsg;
+    setEncStatus(`Imported ${added} records`);
+    showToast(`✓ ${successMsg}`);
+
+    closeEncModal();
+    btnEncSubmit.disabled = false;
+    btnEncSubmitText.textContent = 'Decrypt & Import';
+
+  } catch (err) {
+    if (isAutoSetup) {
+      openEncModal();
+      inputPassphrase.value = passphrase;
+    }
+    encFormError.textContent = err.message || 'Decryption failed.';
+    showToast(err.message || 'Decryption failed.', true);
+    btnEncSubmit.disabled = false;
+    btnEncSubmitText.textContent = 'Decrypt & Import';
+    inputPassphrase.focus();
+  }
+}
+
+function handleSetupUrl() {
+  let pass = '';
+
+  // 1. Check Hash (#key=... or #setup=...)
+  const hash = window.location.hash || '';
+  const hashMatch = hash.match(/^#(?:setup|key)=(.*)$/i);
+  if (hashMatch && hashMatch[1]) {
+    pass = decodeURIComponent(hashMatch[1]).trim();
+  }
+
+  // 2. Check Query Parameters (?key=... or ?setup=...)
+  if (!pass) {
+    const params = new URLSearchParams(window.location.search);
+    const qPass = params.get('key') || params.get('setup');
+    if (qPass) {
+      pass = qPass.trim();
+    }
+  }
+
+  if (!pass) return;
+
+  // Immediately remove credential from visible URL and browser history
+  history.replaceState(null, '', window.location.pathname);
+
+  // Trigger automated import
+  handleEncryptedImport(pass, persons.length > 0 ? 'merge' : 'replace', true);
+}
+
+window.addEventListener('hashchange', handleSetupUrl);
+
+
 function todayStr() {
   const n = new Date();
   return `${n.getFullYear()}-${pad2(n.getMonth()+1)}-${pad2(n.getDate())}`;
 }
 
-// Trap Tab focus inside the modal while it is open
-modalOverlay.addEventListener('keydown', e => {
-  if (e.key !== 'Tab') return;
-  const items = [...modalOverlay.querySelectorAll('button, input, select, textarea')].filter(el => !el.disabled);
-  if (!items.length) return;
-  const first = items[0], last = items[items.length - 1];
-  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+// Trap Tab focus inside open modals
+[modalOverlay, encModalOverlay, detailModalOverlay].forEach(overlay => {
+  if (!overlay) return;
+  overlay.addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const items = [...overlay.querySelectorAll('button, input, select, textarea')].filter(el => !el.disabled);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 });
 
 // ---- Settings Popover ----
@@ -397,7 +715,60 @@ document.getElementById('btnAdd').addEventListener('click', ()=>openModal());
 document.getElementById('btnCta').addEventListener('click', ()=>openModal());
 document.getElementById('btnClose').addEventListener('click', closeModal);
 modalOverlay.addEventListener('click', e=>{ if(e.target===modalOverlay) closeModal(); });
-document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeModal(); closeSettingsPopover(); } });
+
+// Encrypted Modal listeners
+btnUnlockEnc.addEventListener('click', () => {
+  closeSettingsPopover();
+  openEncModal();
+});
+
+btnLockData.addEventListener('click', () => {
+  if (!persons.length) return;
+  if (!confirm('Lock and clear all local records from this browser? This cannot be undone unless you re-import.')) return;
+  persons = [];
+  savePersons(persons);
+  render();
+  setEncStatus('Local records cleared');
+  setIoStatus('Local records cleared');
+});
+
+btnCloseEncModal.addEventListener('click', closeEncModal);
+encModalOverlay.addEventListener('click', e => { if (e.target === encModalOverlay) closeEncModal(); });
+
+btnTogglePw.addEventListener('click', () => {
+  const isPw = inputPassphrase.type === 'password';
+  inputPassphrase.type = isPw ? 'text' : 'password';
+  eyeIcon.innerHTML = isPw
+    ? `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
+    : `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+});
+
+encForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const pass = inputPassphrase.value;
+  if (!pass) {
+    encFormError.textContent = 'Please enter a passphrase.';
+    inputPassphrase.focus();
+    return;
+  }
+  const mode = encConflictWrap.classList.contains('hidden')
+    ? 'merge'
+    : (encForm.querySelector('input[name="encImportMode"]:checked')?.value || 'merge');
+  handleEncryptedImport(pass, mode);
+});
+
+// Detail Modal listeners
+btnCloseDetailModal.addEventListener('click', closeDetailModal);
+detailModalOverlay.addEventListener('click', e => { if (e.target === detailModalOverlay) closeDetailModal(); });
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeModal();
+    closeEncModal();
+    closeDetailModal();
+    closeSettingsPopover();
+  }
+});
 
 inputDob.addEventListener('input', ()=>{
   if (datePreview) datePreview.textContent = formatDatePreview(inputDob.value);
@@ -535,3 +906,4 @@ function escapeHtml(str) {
 applySettings();
 render();
 startTicker();
+handleSetupUrl();
