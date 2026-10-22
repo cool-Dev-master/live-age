@@ -8,10 +8,18 @@
 const STORAGE_KEY  = 'liveage_persons';
 const SETTINGS_KEY = 'liveage_settings';
 
-function loadPersons()  { try { return JSON.parse(localStorage.getItem(STORAGE_KEY))  || []; } catch { return []; } }
-function savePersons(p) { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); }
-function loadSettings() { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; } }
-function saveSettings(s){ localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
+function loadPersons() {
+  try {
+    const list = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    // Keep only well-formed entries so bad data can never break the page
+    return Array.isArray(list)
+      ? list.filter(p => p && typeof p.id === 'string' && typeof p.name === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.dob))
+      : [];
+  } catch { return []; }
+}
+function savePersons(p)  { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); } catch { /* storage full or blocked */ } }
+function loadSettings()  { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; } }
+function saveSettings(s) { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ } }
 function generateId()   { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
 // ---- Color Utilities ----
@@ -50,52 +58,91 @@ function applyTheme(hex) {
 
 /* -------------------------------------------------------
    AGE CALCULATION
-   Accounts for birth time when provided.
+   Uses the exact birth moment (date + optional time).
 
-   Years/months/weeks/days use calendar-date arithmetic.
-   Hours/minutes/seconds measure elapsed time since the
-   last "birth-time tick" of the current day, so if you
-   were born at 14:30 the seconds count from 14:30 today.
-   If birth time hasn't arrived yet today, it rolls back
-   one calendar day so the count is still continuous.
+   1. Find the number of whole months lived, then anchor on
+      that date. Anchor days are clamped to the end of short
+      months (born Jan 31 -> Feb 28/29), so no negative days.
+   2. Everything left over is plain elapsed time since the
+      anchor: days, hours, minutes, seconds.
 ------------------------------------------------------- */
-function calculateAge(dobString, birthTimeStr) {
-  const now = new Date();
-
-  // Parse birth time (HH:MM or HH:MM:SS) — default 00:00:00
-  const [bh, bm, bs] = birthTimeStr
-    ? birthTimeStr.split(':').map(Number)
-    : [0, 0, 0];
-
-  // Seconds from midnight for "now" and "birth time"
-  const nowSecs   = now.getHours()   * 3600 + now.getMinutes()   * 60 + now.getSeconds();
-  const birthSecs = bh * 3600 + bm * 60 + (bs || 0);
-
-  // ---- Calendar part (date-only) ----
-  const dob = new Date(dobString + 'T00:00:00');
-  let years  = now.getFullYear() - dob.getFullYear();
-  let months = now.getMonth()    - dob.getMonth();
-  let days   = now.getDate()     - dob.getDate();
-
-  // If birth time hasn't been reached yet today, we haven't completed this day
-  if (nowSecs < birthSecs) days--;
-
-  if (days < 0)   { months--; days += new Date(now.getFullYear(), now.getMonth(), 0).getDate(); }
-  if (months < 0) { years--; months += 12; }
-
-  const weeks         = Math.floor(days / 7);
-  const remainingDays = days % 7;
-
-  // ---- Time part: seconds elapsed since birth-time today ----
-  let timeSecs = nowSecs - birthSecs;
-  if (timeSecs < 0) timeSecs += 86400; // wrap around midnight
-
-  const hours   = Math.floor(timeSecs / 3600);
-  const minutes = Math.floor((timeSecs % 3600) / 60);
-  const seconds = timeSecs % 60;
-
-  return { years, months, weeks, days: remainingDays, hours, minutes, seconds };
+function parseBirth(dobString, birthTimeStr) {
+  const [y, mo, d] = dobString.split('-').map(Number);
+  const [h, mi, s] = birthTimeStr ? birthTimeStr.split(':').map(Number) : [0, 0, 0];
+  return new Date(y, mo - 1, d, h || 0, mi || 0, s || 0);
 }
+
+// Birth moment shifted forward by `n` months, clamped to the last day of the month
+function addMonths(birth, n) {
+  const total = birth.getMonth() + n;
+  const y = birth.getFullYear() + Math.floor(total / 12);
+  const m = ((total % 12) + 12) % 12;
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(birth.getDate(), lastDay),
+                  birth.getHours(), birth.getMinutes(), birth.getSeconds());
+}
+
+function calculateAge(dobString, birthTimeStr, now = new Date()) {
+  const birth = parseBirth(dobString, birthTimeStr);
+
+  let totalMonths = (now.getFullYear() - birth.getFullYear()) * 12 + (now.getMonth() - birth.getMonth());
+  if (addMonths(birth, totalMonths) > now) totalMonths--;
+  totalMonths = Math.max(totalMonths, 0);
+
+  const anchor = addMonths(birth, totalMonths);
+  let rem = Math.max(Math.floor((now - anchor) / 1000), 0);
+
+  const days = Math.floor(rem / 86400); rem %= 86400;
+  const hours   = Math.floor(rem / 3600);
+  const minutes = Math.floor((rem % 3600) / 60);
+  const seconds = rem % 60;
+
+  return {
+    years: Math.floor(totalMonths / 12),
+    months: totalMonths % 12,
+    weeks: Math.floor(days / 7),
+    days: days % 7,
+    hours, minutes, seconds
+  };
+}
+
+function calculateCumulativeUnits(dobString, birthTimeStr, now = new Date()) {
+  const birth = parseBirth(dobString, birthTimeStr);
+  const diffMs = Math.max(0, now - birth);
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const totalDays = Math.floor(totalHours / 24);
+  const totalWeeks = Math.floor(totalDays / 7);
+
+  let totalMonths = (now.getFullYear() - birth.getFullYear()) * 12 + (now.getMonth() - birth.getMonth());
+  if (addMonths(birth, totalMonths) > now) totalMonths--;
+  totalMonths = Math.max(0, totalMonths);
+
+  const totalYears = Math.floor(totalMonths / 12);
+
+  return {
+    totalYears,
+    totalMonths,
+    totalWeeks,
+    totalDays,
+    totalHours,
+    totalMinutes,
+    totalSeconds
+  };
+}
+
+/* Next birthday feature (disabled)
+// Whole days until the next birthday (0 = today)
+function daysToNextBirthday(dobString, now = new Date()) {
+  const [, mo, d] = dobString.split('-').map(Number);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const build = y => new Date(y, mo - 1, Math.min(d, new Date(y, mo, 0).getDate())); // Feb 29 -> Feb 28
+  let next = build(today.getFullYear());
+  if (next < today) next = build(today.getFullYear() + 1);
+  return Math.round((next - today) / 86400000);
+}
+*/
 
 function pad2(n) { return String(n).padStart(2,'0'); }
 
@@ -104,7 +151,7 @@ function formatDob(dobString, birthTimeStr) {
     .toLocaleDateString('en-US', { day:'numeric', month:'short', year:'numeric' });
   if (birthTimeStr) {
     const [h, m] = birthTimeStr.split(':').map(Number);
-    const t = new Date(); t.setHours(h, m, 0);
+    const t = new Date(); t.setHours(h, m, 0, 0);
     const time = t.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true });
     return `${date} at ${time}`;
   }
@@ -134,12 +181,56 @@ const btnSettings      = document.getElementById('btnSettings');
 const settingsPopover  = document.getElementById('settingsPopover');
 const toggleEdit       = document.getElementById('toggleEdit');
 const themeColorPicker = document.getElementById('themeColorPicker');
+const btnExport        = document.getElementById('btnExport');
+const btnImport        = document.getElementById('btnImport');
+const importFile       = document.getElementById('importFile');
+const ioStatus         = document.getElementById('ioStatus');
+
+// Detail Modal DOM References
+const detailModalOverlay  = document.getElementById('detailModalOverlay');
+const btnCloseDetailModal = document.getElementById('btnCloseDetailModal');
+const detailAvatar        = document.getElementById('detailAvatar');
+const detailPersonName    = document.getElementById('detailPersonName');
+const detailDobText       = document.getElementById('detailDobText');
+const detYears            = document.getElementById('detYears');
+const detMonths           = document.getElementById('detMonths');
+const detWeeks            = document.getElementById('detWeeks');
+const detDays             = document.getElementById('detDays');
+const detHours            = document.getElementById('detHours');
+const detMinutes          = document.getElementById('detMinutes');
+const detSeconds          = document.getElementById('detSeconds');
+const totYears            = document.getElementById('totYears');
+const totMonths           = document.getElementById('totMonths');
+const totWeeks            = document.getElementById('totWeeks');
+const totDays             = document.getElementById('totDays');
+const totHours            = document.getElementById('totHours');
+const totMinutes          = document.getElementById('totMinutes');
+const totSeconds          = document.getElementById('totSeconds');
+
+// Encrypted Data Modal & Settings DOM References
+const encStatus           = document.getElementById('encStatus');
+const btnUnlockEnc        = document.getElementById('btnUnlockEnc');
+const btnLockData         = document.getElementById('btnLockData');
+const encModalOverlay     = document.getElementById('encModalOverlay');
+const btnCloseEncModal    = document.getElementById('btnCloseEncModal');
+const encForm             = document.getElementById('encForm');
+const inputPassphrase     = document.getElementById('inputPassphrase');
+const btnTogglePw         = document.getElementById('btnTogglePw');
+const eyeIcon             = document.getElementById('eyeIcon');
+const encConflictWrap     = document.getElementById('encConflictWrap');
+const encFormError        = document.getElementById('encFormError');
+const encFormSuccess      = document.getElementById('encFormSuccess');
+const btnEncSubmit        = document.getElementById('btnEncSubmit');
+const btnEncSubmitText    = document.getElementById('btnEncSubmitText');
 
 // ---- State ----
 let persons  = loadPersons();
 let settings = loadSettings();
-let tickerInterval = null;
+let tickerInterval = null; // holds a setTimeout id
 let editingId = null;
+let lastFocused = null;
+let activeDetailPerson = null;
+const cardRefs = new Map(); // person.id -> cached DOM nodes
 
 // ---- Apply Saved Settings ----
 function applySettings() {
@@ -155,11 +246,12 @@ function render() {
   const has = persons.length > 0;
   emptyState.classList.toggle('hidden', has);
   cardsGrid.classList.toggle('hidden', !has);
-  if (!has) { cardsGrid.innerHTML = ''; return; }
+  updateEncStatus();
+  if (!has) { cardsGrid.innerHTML = ''; cardRefs.clear(); return; }
 
   const existingIds = new Set([...cardsGrid.querySelectorAll('.age-card')].map(el=>el.dataset.id));
   const newIds = new Set(persons.map(p=>p.id));
-  cardsGrid.querySelectorAll('.age-card').forEach(el=>{ if(!newIds.has(el.dataset.id)) el.remove(); });
+  cardsGrid.querySelectorAll('.age-card').forEach(el=>{ if(!newIds.has(el.dataset.id)) { cardRefs.delete(el.dataset.id); el.remove(); } });
   persons.forEach(p=>{ if(!existingIds.has(p.id)) cardsGrid.appendChild(createCard(p)); });
   persons.forEach(p=>{ const c=cardsGrid.querySelector(`[data-id="${p.id}"]`); if(c) cardsGrid.appendChild(c); });
 }
@@ -169,7 +261,7 @@ function createCard(person) {
   const card = document.createElement('article');
   card.className = 'age-card';
   card.dataset.id = person.id;
-  const initial = person.name.charAt(0).toUpperCase();
+  const initial = escapeHtml(([...person.name][0] || '?').toUpperCase());
 
   card.innerHTML = `
     <div class="card-name-row">
@@ -223,40 +315,87 @@ function createCard(person) {
       <div class="card-dob">
         Born <span>${formatDob(person.dob, person.birthTime)}</span>
       </div>
+      <!-- Next birthday (disabled)
+      <div class="card-next" data-next="${person.id}"></div>
+      -->
     </div>
   `;
 
-  card.querySelector('.btn-edit').addEventListener('click',   () => openModal(person));
-  card.querySelector('.btn-delete').addEventListener('click', () => deletePerson(person.id));
+  card.querySelector('.btn-edit').addEventListener('click',   (e) => { e.stopPropagation(); openModal(person); });
+  card.querySelector('.btn-delete').addEventListener('click', (e) => { e.stopPropagation(); deletePerson(person.id); });
+
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('.card-actions')) return;
+    if (!settings.editEnabled) {
+      openDetailModal(person);
+    }
+  });
+
   return card;
 }
 
 // ---- Tick ----
-function tick() {
-  // Global clock
-  const now = new Date();
-  if (globalTime) {
-    globalTime.textContent = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+function getRefs(id) {
+  let refs = cardRefs.get(id);
+  if (!refs || !refs.year.isConnected) {
+    const card = cardsGrid.querySelector(`[data-id="${id}"]`);
+    if (!card) return null;
+    const q = attr => card.querySelector(`[${attr}]`);
+    refs = {
+      year: q('data-year'), months: q('data-months'), weeks: q('data-weeks'), days: q('data-days'),
+      hours: q('data-hours'), minutes: q('data-minutes'), secs: q('data-secs')/*, next: q('data-next')*/
+    };
+    cardRefs.set(id, refs);
   }
-  // Per-card breakdowns
-  persons.forEach(person => {
-    const age = calculateAge(person.dob, person.birthTime || null);
-    const set = (attr, val) => { const el=document.querySelector(`[${attr}="${person.id}"]`); if(el) el.textContent=val; };
-    set('data-year',    age.years);
-    set('data-months',  pad2(age.months));
-    set('data-weeks',   pad2(age.weeks));
-    set('data-days',    pad2(age.days));
-    set('data-hours',   pad2(age.hours));
-    set('data-minutes', pad2(age.minutes));
-    set('data-secs',    pad2(age.seconds));
-  });
+  return refs;
 }
 
-function startTicker() {
-  if (tickerInterval) clearInterval(tickerInterval);
-  tick();
-  tickerInterval = setInterval(tick, 1000);
+function setText(el, val) { if (el && el.textContent !== String(val)) el.textContent = val; }
+
+function tick() {
+  const now = new Date();
+  if (globalTime) {
+    setText(globalTime, `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`);
+  }
+  persons.forEach(person => {
+    const refs = getRefs(person.id);
+    if (!refs) return;
+    const age = calculateAge(person.dob, person.birthTime || null, now);
+    setText(refs.year,    age.years);
+    setText(refs.months,  pad2(age.months));
+    setText(refs.weeks,   pad2(age.weeks));
+    setText(refs.days,    pad2(age.days));
+    setText(refs.hours,   pad2(age.hours));
+    setText(refs.minutes, pad2(age.minutes));
+    setText(refs.secs,    pad2(age.seconds));
+    // Next birthday (disabled)
+    // const left = daysToNextBirthday(person.dob, now);
+    // setText(refs.next, left === 0 ? '\u{1F382} Birthday today!' : `Next birthday in ${left} day${left === 1 ? '' : 's'}`);
+  });
+
+  if (activeDetailPerson) {
+    updateDetailModal(activeDetailPerson, now);
+  }
 }
+
+// Align ticks to the real second boundary so the clock never drifts or skips
+function startTicker() {
+  clearTimeout(tickerInterval);
+  const loop = () => {
+    tick();
+    tickerInterval = setTimeout(loop, 1000 - (Date.now() % 1000) + 5);
+  };
+  loop();
+}
+
+// Catch up immediately when the tab becomes visible again
+document.addEventListener('visibilitychange', () => { if (!document.hidden) startTicker(); });
+
+// Keep several open tabs in sync
+window.addEventListener('storage', e => {
+  if (e.key === STORAGE_KEY)  { persons = loadPersons(); render(); startTicker(); }
+  if (e.key === SETTINGS_KEY) { settings = loadSettings(); applySettings(); }
+});
 
 // ---- CRUD ----
 function addPerson(name, dob, birthTime) {
@@ -267,14 +406,18 @@ function addPerson(name, dob, birthTime) {
 function editPerson(id, name, dob, birthTime) {
   persons = persons.map(p => p.id===id ? {...p, name:name.trim(), dob, birthTime: birthTime||null} : p);
   savePersons(persons);
+  cardRefs.delete(id);
   const oldCard = cardsGrid.querySelector(`[data-id="${id}"]`);
   if (oldCard) {
     oldCard.replaceWith(createCard(persons.find(p=>p.id===id)));
     persons.forEach(p=>{ const c=cardsGrid.querySelector(`[data-id="${p.id}"]`); if(c) cardsGrid.appendChild(c); });
   }
+  tick();
 }
 
 function deletePerson(id) {
+  const p = persons.find(x => x.id === id);
+  if (p && !confirm(`Remove ${p.name}?`)) return;
   persons = persons.filter(p=>p.id!==id); savePersons(persons); render();
   startTicker(); // keep global clock running
 }
@@ -297,21 +440,354 @@ function openModal(person=null) {
     modalTitle.textContent='New Person';
     btnSubmitEl.querySelector('span').textContent='Start Tracking';
   }
+  lastFocused = document.activeElement;
+  inputDob.max = todayStr();
   modalOverlay.classList.add('open');
   setTimeout(()=>inputName.focus(), 120);
 }
-function closeModal() { modalOverlay.classList.remove('open'); editingId=null; }
+function closeModal() {
+  modalOverlay.classList.remove('open'); editingId=null;
+  if (lastFocused && lastFocused.focus) lastFocused.focus(); // return focus to what opened it
+}
+
+// ---- Person Detail Modal ----
+function updateDetailModal(person, now = new Date()) {
+  const age = calculateAge(person.dob, person.birthTime || null, now);
+  const cum = calculateCumulativeUnits(person.dob, person.birthTime || null, now);
+
+  setText(detYears,   age.years);
+  setText(detMonths,  pad2(age.months));
+  setText(detWeeks,   pad2(age.weeks));
+  setText(detDays,    pad2(age.days));
+  setText(detHours,   pad2(age.hours));
+  setText(detMinutes, pad2(age.minutes));
+  setText(detSeconds, pad2(age.seconds));
+
+  setText(totYears,   `${cum.totalYears.toLocaleString()} years`);
+  setText(totMonths,  `${cum.totalMonths.toLocaleString()} months`);
+  setText(totWeeks,   `${cum.totalWeeks.toLocaleString()} weeks`);
+  setText(totDays,    `${cum.totalDays.toLocaleString()} days`);
+  setText(totHours,   `${cum.totalHours.toLocaleString()} hours`);
+  setText(totMinutes, `${cum.totalMinutes.toLocaleString()} minutes`);
+  setText(totSeconds, `${cum.totalSeconds.toLocaleString()} seconds`);
+}
+
+function openDetailModal(person) {
+  activeDetailPerson = person;
+  detailAvatar.textContent = (person.name[0] || '?').toUpperCase();
+  detailPersonName.textContent = person.name;
+  detailDobText.textContent = `Born ${formatDob(person.dob, person.birthTime)}`;
+  updateDetailModal(person, new Date());
+  lastFocused = document.activeElement;
+  detailModalOverlay.classList.add('open');
+}
+
+function closeDetailModal() {
+  detailModalOverlay.classList.remove('open');
+  activeDetailPerson = null;
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
+}
+
+// ---- Encrypted Data Management (script.enc) ----
+function setEncStatus(msg) { if (encStatus) encStatus.textContent = msg; }
+
+function updateEncStatus() {
+  if (btnLockData) {
+    btnLockData.style.display = persons.length > 0 ? 'inline-block' : 'none';
+  }
+}
+
+function openEncModal() {
+  encForm.reset();
+  encFormError.textContent = '';
+  encFormSuccess.textContent = '';
+  inputPassphrase.type = 'password';
+  if (eyeIcon) {
+    eyeIcon.innerHTML = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  encConflictWrap.classList.toggle('hidden', persons.length === 0);
+  lastFocused = document.activeElement;
+  encModalOverlay.classList.add('open');
+  setTimeout(() => inputPassphrase.focus(), 120);
+}
+
+function closeEncModal() {
+  encModalOverlay.classList.remove('open');
+  encForm.reset();
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
+}
+
+function validatePersonRecord(p) {
+  if (!p || typeof p !== 'object') return null;
+  const name = typeof p.name === 'string' ? stripCommas(p.name).trim().slice(0, 40) : '';
+  const dob = typeof p.dob === 'string' ? p.dob.trim() : '';
+  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) return null;
+
+  const [y, mo, d] = dob.split('-').map(Number);
+  const check = new Date(y, mo - 1, d);
+  if (check.getFullYear() !== y || check.getMonth() !== mo - 1 || check.getDate() !== d) return null;
+
+  let birthTime = null;
+  if (p.birthTime && typeof p.birthTime === 'string') {
+    const tm = p.birthTime.trim();
+    if (/^\d{2}:\d{2}$/.test(tm)) {
+      const [h, m] = tm.split(':').map(Number);
+      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        birthTime = `${pad2(h)}:${pad2(m)}`;
+      }
+    }
+  }
+
+  if (parseBirth(dob, birthTime) > new Date()) return null; // No future births
+  return { id: p.id || generateId(), name, dob, birthTime };
+}
+
+let toastTimeout = null;
+function showToast(message, isError = false) {
+  const toast = document.getElementById('toastNotification');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.style.borderColor = isError ? 'var(--danger)' : 'var(--accent-2)';
+  toast.classList.remove('hidden');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => {
+    toast.classList.add('hidden');
+  }, 3500);
+}
+
+async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = false) {
+  encFormError.textContent = '';
+  encFormSuccess.textContent = '';
+  btnEncSubmit.disabled = true;
+  btnEncSubmitText.textContent = 'Decrypting...';
+
+  try {
+    const encUrl = new URL('script.enc', window.location.href.split('#')[0].split('?')[0]).href;
+    let response;
+    try {
+      response = await fetch(encUrl, { cache: 'no-store' });
+    } catch {
+      throw new Error('Network error: Could not fetch script.enc');
+    }
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('File "script.enc" not found. Please ensure script.enc is placed in root.');
+      }
+      throw new Error(`Failed to load script.enc (HTTP ${response.status})`);
+    }
+
+    const encryptedData = await response.text();
+    if (!window.CryptoUtils) {
+      throw new Error('Crypto engine is not loaded.');
+    }
+
+    const decryptedStr = await window.CryptoUtils.decryptData(encryptedData, passphrase);
+
+    let rawList = [];
+    try {
+      rawList = JSON.parse(decryptedStr);
+    } catch {
+      const lines = decryptedStr.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      rawList = lines.map(parseImportLine).filter(Boolean);
+    }
+
+    if (!Array.isArray(rawList) || rawList.length === 0) {
+      throw new Error('No valid person records found in decrypted dataset.');
+    }
+
+    const key = p => `${p.name.toLowerCase()}|${p.dob}|${p.birthTime || ''}`;
+    let added = 0;
+    let skipped = 0;
+
+    if (mode === 'replace') {
+      const valid = [];
+      const seen = new Set();
+      for (const item of rawList) {
+        const p = validatePersonRecord(item);
+        if (p && !seen.has(key(p))) {
+          seen.add(key(p));
+          valid.push(p);
+          added++;
+        } else {
+          skipped++;
+        }
+      }
+      persons = valid;
+    } else {
+      const seen = new Set(persons.map(key));
+      for (const item of rawList) {
+        const p = validatePersonRecord(item);
+        if (p && !seen.has(key(p))) {
+          seen.add(key(p));
+          persons.push(p);
+          added++;
+        } else {
+          skipped++;
+        }
+      }
+    }
+
+    savePersons(persons);
+    render();
+    startTicker();
+
+    const successMsg = added > 0
+      ? `Imported ${added} record${added === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}.`
+      : `Records already up to date (${skipped} existing).`;
+
+    encFormSuccess.textContent = successMsg;
+    setEncStatus(`Imported ${added} records`);
+    showToast(`✓ ${successMsg}`);
+
+    closeEncModal();
+    btnEncSubmit.disabled = false;
+    btnEncSubmitText.textContent = 'Decrypt & Import';
+
+  } catch (err) {
+    if (isAutoSetup) {
+      openEncModal();
+      inputPassphrase.value = passphrase;
+    }
+    encFormError.textContent = err.message || 'Decryption failed.';
+    showToast(err.message || 'Decryption failed.', true);
+    btnEncSubmit.disabled = false;
+    btnEncSubmitText.textContent = 'Decrypt & Import';
+    inputPassphrase.focus();
+  }
+}
+
+function lockAndClearData(showConfirm = false) {
+  if (showConfirm) {
+    if (!persons.length) return;
+    if (!confirm('Lock and clear all local records from this browser? This cannot be undone unless you re-import.')) return;
+  }
+  persons = [];
+  savePersons(persons);
+  closeDetailModal();
+  render();
+  setEncStatus('Local records cleared');
+  setIoStatus('Local records cleared');
+  showToast('All local records cleared.');
+}
+
+function handleSetupUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const hash = window.location.hash || '';
+
+  // Check for reset parameter (?reset or #reset)
+  if (params.has('reset') || /^#reset$/i.test(hash.trim())) {
+    params.delete('reset');
+    const newSearch = params.toString() ? `?${params.toString()}` : '';
+    const newHash = /^#reset$/i.test(hash.trim()) ? '' : hash;
+    history.replaceState(null, '', window.location.pathname + newSearch + newHash);
+    lockAndClearData(false);
+    return;
+  }
+
+  let pass = '';
+
+  // 1. Check Hash (#setup=...)
+  const hashMatch = hash.match(/^#setup=(.*)$/i);
+  if (hashMatch && hashMatch[1]) {
+    pass = decodeURIComponent(hashMatch[1]).trim();
+  }
+
+  // 2. Check Query Parameters (?setup=...)
+  if (!pass) {
+    const qPass = params.get('setup');
+    if (qPass) {
+      pass = qPass.trim();
+    }
+  }
+
+  if (!pass) return;
+
+  // Immediately remove credential from visible URL and browser history
+  history.replaceState(null, '', window.location.pathname);
+
+  // Trigger automated import
+  handleEncryptedImport(pass, persons.length > 0 ? 'merge' : 'replace', true);
+}
+
+window.addEventListener('hashchange', handleSetupUrl);
+
+
+function todayStr() {
+  const n = new Date();
+  return `${n.getFullYear()}-${pad2(n.getMonth()+1)}-${pad2(n.getDate())}`;
+}
+
+// Trap Tab focus inside open modals
+[modalOverlay, encModalOverlay, detailModalOverlay].forEach(overlay => {
+  if (!overlay) return;
+  overlay.addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const items = [...overlay.querySelectorAll('button, input, select, textarea')].filter(el => !el.disabled);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+});
 
 // ---- Settings Popover ----
-function openSettingsPopover()  { settingsPopover.classList.add('open'); settingsPopover.setAttribute('aria-hidden','false'); }
-function closeSettingsPopover() { settingsPopover.classList.remove('open'); settingsPopover.setAttribute('aria-hidden','true'); }
+function openSettingsPopover()  { settingsPopover.classList.add('open'); settingsPopover.setAttribute('aria-hidden','false'); btnSettings.setAttribute('aria-expanded','true'); }
+function closeSettingsPopover() { settingsPopover.classList.remove('open'); settingsPopover.setAttribute('aria-hidden','true'); btnSettings.setAttribute('aria-expanded','false'); }
 
 // ---- Event Listeners ----
 document.getElementById('btnAdd').addEventListener('click', ()=>openModal());
 document.getElementById('btnCta').addEventListener('click', ()=>openModal());
 document.getElementById('btnClose').addEventListener('click', closeModal);
 modalOverlay.addEventListener('click', e=>{ if(e.target===modalOverlay) closeModal(); });
-document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeModal(); closeSettingsPopover(); } });
+
+// Encrypted Modal listeners
+btnUnlockEnc.addEventListener('click', () => {
+  closeSettingsPopover();
+  openEncModal();
+});
+
+btnLockData.addEventListener('click', () => {
+  lockAndClearData(true);
+});
+
+btnCloseEncModal.addEventListener('click', closeEncModal);
+encModalOverlay.addEventListener('click', e => { if (e.target === encModalOverlay) closeEncModal(); });
+
+btnTogglePw.addEventListener('click', () => {
+  const isPw = inputPassphrase.type === 'password';
+  inputPassphrase.type = isPw ? 'text' : 'password';
+  eyeIcon.innerHTML = isPw
+    ? `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
+    : `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`;
+});
+
+encForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const pass = inputPassphrase.value;
+  if (!pass) {
+    encFormError.textContent = 'Please enter a passphrase.';
+    inputPassphrase.focus();
+    return;
+  }
+  const mode = encConflictWrap.classList.contains('hidden')
+    ? 'merge'
+    : (encForm.querySelector('input[name="encImportMode"]:checked')?.value || 'merge');
+  handleEncryptedImport(pass, mode);
+});
+
+// Detail Modal listeners
+btnCloseDetailModal.addEventListener('click', closeDetailModal);
+detailModalOverlay.addEventListener('click', e => { if (e.target === detailModalOverlay) closeDetailModal(); });
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeModal();
+    closeEncModal();
+    closeDetailModal();
+    closeSettingsPopover();
+  }
+});
 
 inputDob.addEventListener('input', ()=>{
   if (datePreview) datePreview.textContent = formatDatePreview(inputDob.value);
@@ -319,14 +795,14 @@ inputDob.addEventListener('input', ()=>{
 
 addForm.addEventListener('submit', e=>{
   e.preventDefault(); formError.textContent='';
-  const name      = inputName.value.trim();
+  const name      = stripCommas(inputName.value).trim();
   const dob       = inputDob.value;
   const birthTime = inputTime.value || null; // "HH:MM" or null
 
   if (!name) { formError.textContent='Please enter a name.'; inputName.focus(); return; }
   if (!dob)  { formError.textContent='Please select a date of birth.'; inputDob.focus(); return; }
-  if (new Date(dob+'T00:00:00') > new Date()) {
-    formError.textContent='Date of birth cannot be in the future.'; inputDob.focus(); return;
+  if (parseBirth(dob, birthTime) > new Date()) {
+    formError.textContent='Birth date and time cannot be in the future.'; inputDob.focus(); return;
   }
   editingId ? editPerson(editingId, name, dob, birthTime) : addPerson(name, dob, birthTime);
   closeModal();
@@ -350,12 +826,103 @@ themeColorPicker.addEventListener('input', ()=>{
   settings.themeColor = themeColorPicker.value; saveSettings(settings);
 });
 
+
+// ---- Import / Export (.txt, one person per line) ----
+// Line format:  name,mm-dd-yyyy,hh-mm-AM   e.g.  Alice,01-31-1995,02-30-PM
+// Birth time is optional, leave it empty:  Bob,02-29-2000,
+const stripCommas = str => str.replace(/,/g, '');
+
+function toExportLine(p) {
+  const [y, mo, d] = p.dob.split('-');
+  let time = '';
+  if (p.birthTime) {
+    const [h, m] = p.birthTime.split(':').map(Number);
+    const ap = h >= 12 ? 'PM' : 'AM';
+    time = `${pad2(h % 12 || 12)}-${pad2(m)}-${ap}`;
+  }
+  return `${stripCommas(p.name)},${mo}-${d}-${y},${time}`;
+}
+
+// Returns a person object, or null if the line is not valid
+function parseImportLine(line) {
+  const parts = line.split(',').map(x => x.trim());
+  if (parts.length < 2) return null;
+  const name = parts[0];
+  const dm = parts[1].match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (!name || !dm) return null;
+  const mo = +dm[1], d = +dm[2], y = +dm[3];
+  const check = new Date(y, mo - 1, d);
+  if (check.getFullYear() !== y || check.getMonth() !== mo - 1 || check.getDate() !== d) return null;
+  const dob = `${y}-${pad2(mo)}-${pad2(d)}`;
+
+  let birthTime = null;
+  if (parts[2]) {
+    const tm = parts[2].match(/^(\d{1,2})-(\d{2})-(AM|PM)$/i);
+    if (!tm) return null;
+    let h = +tm[1]; const m = +tm[2], ap = tm[3].toUpperCase();
+    if (h < 1 || h > 12 || m > 59) return null;
+    if (ap === 'AM' && h === 12) h = 0;
+    if (ap === 'PM' && h !== 12) h += 12;
+    birthTime = `${pad2(h)}:${pad2(m)}`;
+  }
+  if (parseBirth(dob, birthTime) > new Date()) return null; // no future births
+  return { id: generateId(), name: name.slice(0, 40), dob, birthTime };
+}
+
+function setIoStatus(msg) { if (ioStatus) ioStatus.textContent = msg; }
+
+btnExport.addEventListener('click', () => {
+  if (!persons.length) { setIoStatus('Nothing to export yet'); return; }
+  const text = persons.map(toExportLine).join('\n') + '\n';
+  const url  = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'live-age-data.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setIoStatus(`Exported ${persons.length} ${persons.length === 1 ? 'person' : 'people'}`);
+});
+
+btnImport.addEventListener('click', () => importFile.click());
+
+importFile.addEventListener('change', () => {
+  const file = importFile.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const lines = String(reader.result).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const key = p => `${p.name.toLowerCase()}|${p.dob}|${p.birthTime || ''}`;
+    const seen = new Set(persons.map(key));
+    let added = 0, skipped = 0;
+    lines.forEach(line => {
+      const p = parseImportLine(line);
+      if (!p) { skipped++; return; }
+      if (seen.has(key(p))) { skipped++; return; }   // already saved
+      seen.add(key(p)); persons.push(p); added++;
+    });
+    if (added) { savePersons(persons); render(); startTicker(); }
+    setIoStatus(`Imported ${added}${skipped ? `, skipped ${skipped}` : ''}`);
+    importFile.value = ''; // allow re-importing the same file
+  };
+  reader.onerror = () => setIoStatus('Could not read file');
+  reader.readAsText(file);
+});
+
+// Strip commas as the user types or pastes into the name box (commas are the file separator)
+inputName.addEventListener('input', () => {
+  if (inputName.value.includes(',')) {
+    const pos = inputName.selectionStart - (inputName.value.slice(0, inputName.selectionStart).match(/,/g) || []).length;
+    inputName.value = stripCommas(inputName.value);
+    inputName.setSelectionRange(pos, pos);
+  }
+});
+
 // ---- Utils ----
 function escapeHtml(str) {
-  const el=document.createElement('div'); el.appendChild(document.createTextNode(str)); return el.innerHTML;
+  return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
 
 // ---- Init ----
 applySettings();
 render();
 startTicker();
+handleSetupUrl();

@@ -1,0 +1,12 @@
+# Plaintext records (NEVER commit raw records or DOBs)
+data.txt
+data.json
+*.txt
+!LICENSE
+
+# Node / System
+node_modules/
+.DS_Store
+*.log
+tests/
+
