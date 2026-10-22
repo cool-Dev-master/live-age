@@ -10,13 +10,19 @@ A modern, high-precision web application that tracks ages in real time down to t
 - **Detailed Statistics View**: Click any card in normal mode to open an expanded statistics modal featuring:
   - Standard live breakdown (Years, Months, Weeks, Days, Hours, Minutes, Seconds).
   - **Lifetime Milestones**: Real-time cumulative units lived (Total Years, Total Months, Total Weeks, Total Days, Total Hours, Total Minutes, Total Seconds).
+- **Multi-Language Support (i18n)**:
+  - Supports **English** and **Tamil (தமிழ்)** out of the box with zero external dependencies.
+  - Seamlessly translates live age cards, detailed lifetime milestones, modals, and date/time formatting.
+  - Switch languages anytime from the Settings popover (persisted in `localStorage`).
+  - Extensible dictionary located in `scripts/translation.js`.
 - **Client-Side Privacy**:
   - All records are stored locally in the browser (`localStorage`).
   - No backend database, tracking scripts, or server secrets.
 - **Encrypted Dataset Support (`script.enc`)**:
   - Supports loading pre-packaged encrypted datasets via `script.enc`.
   - Built with native **Web Crypto API** (`AES-256-GCM` with 96-bit nonce, `PBKDF2-HMAC-SHA-256` key derivation with 600,000 iterations).
-  - Unlock via Settings popover or setup link (`#key=<passphrase>`).
+  - Unlock via Settings popover or setup URL parameter (`?setup=<passphrase>` or `#setup=<passphrase>`).
+  - Instant reset/lock via URL parameter (`?reset` or `#reset`).
 - **Data Import / Export**:
   - Export and import records as plain text files directly from Settings.
 

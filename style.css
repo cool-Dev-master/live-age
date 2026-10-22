@@ -30,8 +30,8 @@
   --radius-md: 16px;
   --radius-lg: 24px;
   --radius-xl: 32px;
-  --font-display: "Audiowide", sans-serif;
-  --font-ui: "Michroma", sans-serif;
+  --font-display: "Audiowide", "Noto Sans Tamil", sans-serif;
+  --font-ui: "Michroma", "Noto Sans Tamil", sans-serif;
   --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -226,7 +226,8 @@ body {
   position: absolute;
   top: calc(100% + 10px);
   left: 0;
-  width: 276px;
+  width: 330px;
+  max-width: calc(100vw - 24px);
   z-index: 300;
   background: #0f1320;
   border: 1px solid var(--border-hv);
@@ -274,9 +275,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 .setting-row:last-child {
   border-bottom: none;
@@ -286,16 +288,46 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 130px;
+  min-width: 0;
 }
 .setting-label {
   font-size: 0.8rem;
   letter-spacing: 0.04em;
   color: var(--text);
+  word-break: break-word;
 }
 .setting-desc {
   font-size: 0.62rem;
   letter-spacing: 0.04em;
   color: var(--text-muted);
+  word-break: break-word;
+}
+
+.setting-select {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-family: inherit;
+  font-size: 0.74rem;
+  letter-spacing: 0.03em;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: border-color var(--transition), background-color var(--transition);
+}
+.setting-select:focus,
+.setting-select:hover {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.12);
+}
+.setting-select option {
+  background: #101422;
+  color: #fff;
+  padding: 6px;
 }
 
 /* Toggle Switch */
@@ -681,9 +713,10 @@ body.edit-enabled .card-actions {
   margin-top: 4px;
 }
 .card-dob {
-  font-size: 0.64rem;
-  letter-spacing: 0.1em;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
   color: var(--text-muted);
+  line-height: 1.4;
 }
 .card-dob span {
   color: var(--text-dim);
@@ -771,6 +804,16 @@ body.edit-enabled .card-actions {
 .btn-close:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
+}
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.modal-btn-edit {
+  width: 32px;
+  height: 32px;
 }
 
 .modal-form {
@@ -931,7 +974,8 @@ body.edit-enabled .card-actions {
   }
 
   .settings-popover {
-    width: 260px;
+    width: 320px;
+    max-width: calc(100vw - 24px);
   }
 
   .modal-box {
@@ -1004,7 +1048,7 @@ body.edit-enabled .card-actions {
   /* Settings popover: full width aware */
   .settings-popover {
     width: calc(100vw - 24px);
-    max-width: 300px;
+    max-width: 340px;
     left: 0;
   }
 
@@ -1137,16 +1181,18 @@ body.edit-enabled .card-actions {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 .btn-io {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border-hv, var(--border));
   color: var(--text);
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 5px 9px;
   font-family: var(--font-ui);
-  font-size: 0.66rem;
-  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
   cursor: pointer;
   transition: var(--transition);
 }

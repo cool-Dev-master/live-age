@@ -22,6 +22,24 @@ function loadSettings()  { try { return JSON.parse(localStorage.getItem(SETTINGS
 function saveSettings(s) { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ } }
 function generateId()   { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
+// ---- Internationalization (i18n) ----
+// Dictionary is loaded from scripts/translation.js
+function getI18nDict() {
+  if (typeof I18N !== 'undefined') return I18N;
+  if (typeof window !== 'undefined' && window.I18N) return window.I18N;
+  if (typeof globalThis !== 'undefined' && globalThis.I18N) return globalThis.I18N;
+  return {};
+}
+
+function t(key, ...args) {
+  const dict = getI18nDict();
+  const lang = (settings && settings.lang) || 'en';
+  const langDict = dict[lang] || dict.en || {};
+  const enDict = dict.en || {};
+  const val = langDict[key] !== undefined ? langDict[key] : (enDict[key] !== undefined ? enDict[key] : key);
+  return typeof val === 'function' ? val(...args) : val;
+}
+
 // ---- Color Utilities ----
 function hexToHsl(hex) {
   let r = parseInt(hex.slice(1,3),16)/255, g = parseInt(hex.slice(3,5),16)/255, b = parseInt(hex.slice(5,7),16)/255;
@@ -147,21 +165,27 @@ function daysToNextBirthday(dobString, now = new Date()) {
 function pad2(n) { return String(n).padStart(2,'0'); }
 
 function formatDob(dobString, birthTimeStr) {
+  const isTa = (settings && settings.lang === 'ta');
+  const locale = isTa ? 'ta-IN' : 'en-US';
+  const monthFormat = isTa ? 'long' : 'short';
   const date = new Date(dobString + 'T00:00:00')
-    .toLocaleDateString('en-US', { day:'numeric', month:'short', year:'numeric' });
+    .toLocaleDateString(locale, { day:'numeric', month: monthFormat, year:'numeric' });
   if (birthTimeStr) {
     const [h, m] = birthTimeStr.split(':').map(Number);
-    const t = new Date(); t.setHours(h, m, 0, 0);
-    const time = t.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true });
-    return `${date} at ${time}`;
+    const tTime = new Date(); tTime.setHours(h, m, 0, 0);
+    const time = tTime.toLocaleTimeString(locale, { hour:'numeric', minute:'2-digit', hour12:true });
+    return `${date} ${t('bornAt')} ${time}`;
   }
   return date;
 }
 
 function formatDatePreview(dobString) {
   if (!dobString) return '';
+  const isTa = (settings && settings.lang === 'ta');
+  const locale = isTa ? 'ta-IN' : 'en-US';
+  const monthFormat = isTa ? 'long' : 'short';
   return new Date(dobString + 'T00:00:00')
-    .toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+    .toLocaleDateString(locale, { month: monthFormat, day:'numeric', year:'numeric' });
 }
 
 // ---- DOM References ----
@@ -179,6 +203,7 @@ const datePreview      = document.getElementById('datePreview');
 const globalTime       = document.getElementById('globalTime');
 const btnSettings      = document.getElementById('btnSettings');
 const settingsPopover  = document.getElementById('settingsPopover');
+const langSelect       = document.getElementById('langSelect');
 const toggleEdit       = document.getElementById('toggleEdit');
 const themeColorPicker = document.getElementById('themeColorPicker');
 const btnExport        = document.getElementById('btnExport');
@@ -232,6 +257,54 @@ let lastFocused = null;
 let activeDetailPerson = null;
 const cardRefs = new Map(); // person.id -> cached DOM nodes
 
+// ---- Language Switcher ----
+function applyLanguage(lang) {
+  settings.lang = lang || 'en';
+  document.documentElement.lang = settings.lang;
+  if (langSelect) langSelect.value = settings.lang;
+
+  document.title = settings.lang === 'ta' ? 'நேரலை வயது — நிகழ்நேர வயது கண்காணிப்பான்' : 'Live Age — Real-Time Age Tracker';
+
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    const val = t(key);
+    if (val) {
+      if (key === 'appTitle') {
+        el.innerHTML = settings.lang === 'ta' ? 'நேரலை<span class="accent">வயது</span>' : 'Live<span class="accent">age</span>';
+      } else {
+        el.textContent = val;
+      }
+    }
+  });
+
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const key = el.getAttribute('data-i18n-placeholder');
+    const val = t(key);
+    if (val) el.placeholder = val;
+  });
+
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const key = el.getAttribute('data-i18n-title');
+    const val = t(key);
+    if (val) el.title = val;
+  });
+
+  document.querySelectorAll('[data-i18n-aria]').forEach(el => {
+    const key = el.getAttribute('data-i18n-aria');
+    const val = t(key);
+    if (val) el.setAttribute('aria-label', val);
+  });
+
+  // Re-render cards cleanly so all text & date formats dynamically update
+  render(true);
+  tick();
+
+  if (activeDetailPerson) {
+    updateDetailModal(activeDetailPerson, new Date());
+    detailDobText.textContent = `${t('born')} ${formatDob(activeDetailPerson.dob, activeDetailPerson.birthTime)}`;
+  }
+}
+
 // ---- Apply Saved Settings ----
 function applySettings() {
   toggleEdit.checked = !!settings.editEnabled;
@@ -239,15 +312,21 @@ function applySettings() {
   const color = settings.themeColor || '#a855f7';
   themeColorPicker.value = color;
   applyTheme(color);
+  applyLanguage(settings.lang || 'en');
 }
 
 // ---- Render ----
-function render() {
+function render(force = false) {
   const has = persons.length > 0;
   emptyState.classList.toggle('hidden', has);
   cardsGrid.classList.toggle('hidden', !has);
   updateEncStatus();
   if (!has) { cardsGrid.innerHTML = ''; cardRefs.clear(); return; }
+
+  if (force) {
+    cardsGrid.innerHTML = '';
+    cardRefs.clear();
+  }
 
   const existingIds = new Set([...cardsGrid.querySelectorAll('.age-card')].map(el=>el.dataset.id));
   const newIds = new Set(persons.map(p=>p.id));
@@ -268,18 +347,18 @@ function createCard(person) {
       <div class="card-avatar">${initial}</div>
       <span class="card-name">${escapeHtml(person.name)}</span>
       <div class="card-actions">
-        <button class="btn-edit" data-id="${person.id}" title="Edit" aria-label="Edit ${escapeHtml(person.name)}">
+        <button class="btn-edit" data-id="${person.id}" title="${t('edit')}" aria-label="${t('edit')} ${escapeHtml(person.name)}">
           <svg viewBox="0 0 20 20" fill="none" width="13" height="13">
             <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" fill="currentColor"/>
           </svg>
         </button>
-        <button class="btn-delete" data-id="${person.id}" title="Remove" aria-label="Remove ${escapeHtml(person.name)}">&#x2715;</button>
+        <button class="btn-delete" data-id="${person.id}" title="${t('remove')}" aria-label="${t('remove')} ${escapeHtml(person.name)}">&#x2715;</button>
       </div>
     </div>
 
     <div class="card-year-wrap">
       <div class="card-year" data-year="${person.id}">--</div>
-      <div class="card-year-label">years old</div>
+      <div class="card-year-label">${t('yearsOld')}</div>
     </div>
 
     <div class="card-divider"></div>
@@ -287,37 +366,34 @@ function createCard(person) {
     <div class="card-breakdown">
       <div class="breakdown-item">
         <span class="breakdown-value" data-months="${person.id}">--</span>
-        <span class="breakdown-label">Months</span>
+        <span class="breakdown-label">${t('months')}</span>
       </div>
       <div class="breakdown-item">
         <span class="breakdown-value" data-weeks="${person.id}">--</span>
-        <span class="breakdown-label">Weeks</span>
+        <span class="breakdown-label">${t('weeks')}</span>
       </div>
       <div class="breakdown-item">
         <span class="breakdown-value" data-days="${person.id}">--</span>
-        <span class="breakdown-label">Days</span>
+        <span class="breakdown-label">${t('days')}</span>
       </div>
       <div class="breakdown-item">
         <span class="breakdown-value" data-hours="${person.id}">--</span>
-        <span class="breakdown-label">Hours</span>
+        <span class="breakdown-label">${t('hours')}</span>
       </div>
       <div class="breakdown-item">
         <span class="breakdown-value" data-minutes="${person.id}">--</span>
-        <span class="breakdown-label">Minutes</span>
+        <span class="breakdown-label">${t('minutes')}</span>
       </div>
       <div class="breakdown-item">
         <span class="breakdown-value" data-secs="${person.id}">--</span>
-        <span class="breakdown-label">Seconds</span>
+        <span class="breakdown-label">${t('seconds')}</span>
       </div>
     </div>
 
     <div class="card-footer">
       <div class="card-dob">
-        Born <span>${formatDob(person.dob, person.birthTime)}</span>
+        ${t('born')} <span>${formatDob(person.dob, person.birthTime)}</span>
       </div>
-      <!-- Next birthday (disabled)
-      <div class="card-next" data-next="${person.id}"></div>
-      -->
     </div>
   `;
 
@@ -417,7 +493,7 @@ function editPerson(id, name, dob, birthTime) {
 
 function deletePerson(id) {
   const p = persons.find(x => x.id === id);
-  if (p && !confirm(`Remove ${p.name}?`)) return;
+  if (p && !confirm(t('removeConfirm', p.name))) return;
   persons = persons.filter(p=>p.id!==id); savePersons(persons); render();
   startTicker(); // keep global clock running
 }
@@ -429,16 +505,18 @@ function openModal(person=null) {
 
   if (person) {
     editingId=person.id;
-    modalTitle.textContent='Edit Person';
-    btnSubmitEl.querySelector('span').textContent='Save Changes';
+    modalTitle.textContent = t('editPerson');
+    btnSubmitEl.querySelector('span').textContent = t('saveChanges');
     inputName.value = person.name;
     inputDob.value  = person.dob;
     inputTime.value = person.birthTime || '';
     if (datePreview) datePreview.textContent = formatDatePreview(person.dob);
   } else {
     editingId=null;
-    modalTitle.textContent='New Person';
-    btnSubmitEl.querySelector('span').textContent='Start Tracking';
+    modalTitle.textContent = t('newPerson');
+    btnSubmitEl.querySelector('span').textContent = t('startTracking');
+    inputDob.value = '2000-01-01';
+    if (datePreview) datePreview.textContent = formatDatePreview('2000-01-01');
   }
   lastFocused = document.activeElement;
   inputDob.max = todayStr();
@@ -463,20 +541,23 @@ function updateDetailModal(person, now = new Date()) {
   setText(detMinutes, pad2(age.minutes));
   setText(detSeconds, pad2(age.seconds));
 
-  setText(totYears,   `${cum.totalYears.toLocaleString()} years`);
-  setText(totMonths,  `${cum.totalMonths.toLocaleString()} months`);
-  setText(totWeeks,   `${cum.totalWeeks.toLocaleString()} weeks`);
-  setText(totDays,    `${cum.totalDays.toLocaleString()} days`);
-  setText(totHours,   `${cum.totalHours.toLocaleString()} hours`);
-  setText(totMinutes, `${cum.totalMinutes.toLocaleString()} minutes`);
-  setText(totSeconds, `${cum.totalSeconds.toLocaleString()} seconds`);
+  setText(totYears,   `${cum.totalYears.toLocaleString()} ${t('unitYears')}`);
+  setText(totMonths,  `${cum.totalMonths.toLocaleString()} ${t('unitMonths')}`);
+  setText(totWeeks,   `${cum.totalWeeks.toLocaleString()} ${t('unitWeeks')}`);
+  setText(totDays,    `${cum.totalDays.toLocaleString()} ${t('unitDays')}`);
+  setText(totHours,   `${cum.totalHours.toLocaleString()} ${t('unitHours')}`);
+  setText(totMinutes, `${cum.totalMinutes.toLocaleString()} ${t('unitMinutes')}`);
+  setText(totSeconds, `${cum.totalSeconds.toLocaleString()} ${t('unitSeconds')}`);
 }
 
 function openDetailModal(person) {
   activeDetailPerson = person;
   detailAvatar.textContent = (person.name[0] || '?').toUpperCase();
   detailPersonName.textContent = person.name;
-  detailDobText.textContent = `Born ${formatDob(person.dob, person.birthTime)}`;
+  detailDobText.textContent = `${t('born')} ${formatDob(person.dob, person.birthTime)}`;
+  if (btnEditDetailModal) {
+    btnEditDetailModal.setAttribute('aria-label', `${t('edit')} ${person.name}`);
+  }
   updateDetailModal(person, new Date());
   lastFocused = document.activeElement;
   detailModalOverlay.classList.add('open');
@@ -559,7 +640,7 @@ async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = f
   encFormError.textContent = '';
   encFormSuccess.textContent = '';
   btnEncSubmit.disabled = true;
-  btnEncSubmitText.textContent = 'Decrypting...';
+  btnEncSubmitText.textContent = t('decrypting');
 
   try {
     const encUrl = new URL('script.enc', window.location.href.split('#')[0].split('?')[0]).href;
@@ -567,7 +648,7 @@ async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = f
     try {
       response = await fetch(encUrl, { cache: 'no-store' });
     } catch {
-      throw new Error('Network error: Could not fetch script.enc');
+      throw new Error(t('fileFetchFailed'));
     }
 
     if (!response.ok) {
@@ -632,27 +713,25 @@ async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = f
     render();
     startTicker();
 
-    const successMsg = added > 0
-      ? `Imported ${added} record${added === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}.`
-      : `Records already up to date (${skipped} existing).`;
+    const successMsg = t('recordsImported', added, skipped);
 
     encFormSuccess.textContent = successMsg;
-    setEncStatus(`Imported ${added} records`);
+    setEncStatus(successMsg);
     showToast(`✓ ${successMsg}`);
 
     closeEncModal();
     btnEncSubmit.disabled = false;
-    btnEncSubmitText.textContent = 'Decrypt & Import';
+    btnEncSubmitText.textContent = t('decryptImport');
 
   } catch (err) {
     if (isAutoSetup) {
       openEncModal();
       inputPassphrase.value = passphrase;
     }
-    encFormError.textContent = err.message || 'Decryption failed.';
-    showToast(err.message || 'Decryption failed.', true);
+    encFormError.textContent = err.message || t('decryptionFailed');
+    showToast(err.message || t('decryptionFailed'), true);
     btnEncSubmit.disabled = false;
-    btnEncSubmitText.textContent = 'Decrypt & Import';
+    btnEncSubmitText.textContent = t('decryptImport');
     inputPassphrase.focus();
   }
 }
@@ -660,15 +739,15 @@ async function handleEncryptedImport(passphrase, mode = 'merge', isAutoSetup = f
 function lockAndClearData(showConfirm = false) {
   if (showConfirm) {
     if (!persons.length) return;
-    if (!confirm('Lock and clear all local records from this browser? This cannot be undone unless you re-import.')) return;
+    if (!confirm(t('lockConfirm'))) return;
   }
   persons = [];
   savePersons(persons);
   closeDetailModal();
   render();
-  setEncStatus('Local records cleared');
-  setIoStatus('Local records cleared');
-  showToast('All local records cleared.');
+  setEncStatus(t('localRecordsCleared'));
+  setIoStatus(t('localRecordsCleared'));
+  showToast(t('localRecordsCleared'));
 }
 
 function handleSetupUrl() {
@@ -766,7 +845,7 @@ encForm.addEventListener('submit', e => {
   e.preventDefault();
   const pass = inputPassphrase.value;
   if (!pass) {
-    encFormError.textContent = 'Please enter a passphrase.';
+    encFormError.textContent = t('passphraseRequired');
     inputPassphrase.focus();
     return;
   }
@@ -778,6 +857,14 @@ encForm.addEventListener('submit', e => {
 
 // Detail Modal listeners
 btnCloseDetailModal.addEventListener('click', closeDetailModal);
+if (btnEditDetailModal) {
+  btnEditDetailModal.addEventListener('click', () => {
+    if (!activeDetailPerson) return;
+    const personToEdit = activeDetailPerson;
+    closeDetailModal();
+    openModal(personToEdit);
+  });
+}
 detailModalOverlay.addEventListener('click', e => { if (e.target === detailModalOverlay) closeDetailModal(); });
 
 document.addEventListener('keydown', e => {
@@ -799,10 +886,10 @@ addForm.addEventListener('submit', e=>{
   const dob       = inputDob.value;
   const birthTime = inputTime.value || null; // "HH:MM" or null
 
-  if (!name) { formError.textContent='Please enter a name.'; inputName.focus(); return; }
-  if (!dob)  { formError.textContent='Please select a date of birth.'; inputDob.focus(); return; }
+  if (!name) { formError.textContent = t('nameRequired'); inputName.focus(); return; }
+  if (!dob)  { formError.textContent = t('dobRequired'); inputDob.focus(); return; }
   if (parseBirth(dob, birthTime) > new Date()) {
-    formError.textContent='Birth date and time cannot be in the future.'; inputDob.focus(); return;
+    formError.textContent = t('futureDobError'); inputDob.focus(); return;
   }
   editingId ? editPerson(editingId, name, dob, birthTime) : addPerson(name, dob, birthTime);
   closeModal();
@@ -815,6 +902,14 @@ btnSettings.addEventListener('click', e=>{
 document.addEventListener('click', e=>{
   if (!document.getElementById('settingsWrap').contains(e.target)) closeSettingsPopover();
 });
+
+if (langSelect) {
+  langSelect.addEventListener('change', () => {
+    settings.lang = langSelect.value;
+    saveSettings(settings);
+    applyLanguage(settings.lang);
+  });
+}
 
 toggleEdit.addEventListener('change', ()=>{
   document.body.classList.toggle('edit-enabled', toggleEdit.checked);
