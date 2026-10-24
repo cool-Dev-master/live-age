@@ -500,22 +500,31 @@ function deletePerson(id) {
 
 // ---- Modal ----
 function openModal(person=null) {
-  addForm.reset(); formError.textContent='';
-  if (datePreview) datePreview.textContent = '';
+  formError.textContent='';
 
   if (person) {
     editingId=person.id;
     modalTitle.textContent = t('editPerson');
     btnSubmitEl.querySelector('span').textContent = t('saveChanges');
     inputName.value = person.name;
+    inputName.defaultValue = person.name;
+    inputDob.defaultValue = person.dob;
+    inputDob.setAttribute('value', person.dob);
     inputDob.value  = person.dob;
     inputTime.value = person.birthTime || '';
+    inputTime.defaultValue = person.birthTime || '';
     if (datePreview) datePreview.textContent = formatDatePreview(person.dob);
   } else {
     editingId=null;
     modalTitle.textContent = t('newPerson');
     btnSubmitEl.querySelector('span').textContent = t('startTracking');
+    inputName.value = '';
+    inputName.defaultValue = '';
+    inputDob.defaultValue = '2000-01-01';
+    inputDob.setAttribute('value', '2000-01-01');
     inputDob.value = '2000-01-01';
+    inputTime.value = '';
+    inputTime.defaultValue = '';
     if (datePreview) datePreview.textContent = formatDatePreview('2000-01-01');
   }
   lastFocused = document.activeElement;
@@ -876,8 +885,14 @@ document.addEventListener('keydown', e => {
   }
 });
 
-inputDob.addEventListener('input', ()=>{
-  if (datePreview) datePreview.textContent = formatDatePreview(inputDob.value);
+['input', 'change'].forEach(evt => {
+  inputDob.addEventListener(evt, () => {
+    if (inputDob.value) {
+      inputDob.defaultValue = inputDob.value;
+      inputDob.setAttribute('value', inputDob.value);
+    }
+    if (datePreview) datePreview.textContent = formatDatePreview(inputDob.value);
+  });
 });
 
 addForm.addEventListener('submit', e=>{
